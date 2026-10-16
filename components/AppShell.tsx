@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { APP_NAME } from "@/lib/appName";
+import { clearPersistentState } from "@/lib/persistentState";
 
 const TOOLS = [
   { href: "/humanizer", label: "Humanizer" },
@@ -16,6 +17,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    clearPersistentState();
     window.location.assign("/login");
   };
 

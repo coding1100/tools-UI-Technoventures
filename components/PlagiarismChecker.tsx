@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useToast } from "@/components/ui/Toast";
 import { Button, Card, FileButton, InlineSegment, ScoreBar, Spinner, textareaClass, Toggle } from "@/components/ui/primitives";
 import { downloadPost, errorMessage, pollJson, postFile, postJson, remove, sleep } from "@/lib/api";
+import { usePersistentState } from "@/lib/persistentState";
 import { countWords } from "@/lib/text";
 import { assertUploadSize, DOCUMENT_ACCEPT } from "@/lib/uploads";
 
@@ -59,40 +60,42 @@ const TIER_STYLES: Record<Tier, string> = {
 
 export default function PlagiarismChecker() {
   const toast = useToast();
-  const [text, setText] = useState("");
-  const [title, setTitle] = useState("Pasted text");
-  const [settings, setSettings] = useState<Settings>({
+  const [text, setText] = usePersistentState("plagiarism.text", "");
+  const [title, setTitle] = usePersistentState("plagiarism.title", "Pasted text");
+  const [settings, setSettings] = usePersistentState<Settings>("plagiarism.settings", {
     exclude_bibliography: true,
     exclude_quotes: true,
     compare_past_scans: true,
   });
-  const [scan, setScan] = useState<Scan | null>(null);
-  const [phase, setPhase] = useState<"input" | "progress" | "results">("input");
+  const [scan, setScan] = usePersistentState<Scan | null>("plagiarism.scan", null);
+  const [phase, setPhase] = usePersistentState<"input" | "progress" | "results">("plagiarism.phase", "input");
   const [notice, setNotice] = useState("");
   const [stalled, setStalled] = useState(false);
   const [busy, setBusy] = useState<"" | "upload" | "report">("");
   const [focused, setFocused] = useState<Match | null>(null);
   const [rewrite, setRewrite] = useState("");
-  const [edits, setEdits] = useState<Record<string, string>>({});
-  const [ignored, setIgnored] = useState<Set<string>>(new Set());
+  const [edits, setEdits] = usePersistentState<Record<string, string>>("plagiarism.edits", {});
+  const [ignored, setIgnored] = usePersistentState<string[]>("plagiarism.ignored", []);
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const pollRun = useRef(0);
+  const watchedScan = useRef<string | null>(null);
+  const creatingScan = useRef(false);
 
   useEffect(() => () => void (pollRun.current += 1), []);
 
   const words = useMemo(() => countWords(text), [text]);
   const result = scan?.result;
   const dirty = Object.keys(edits).length > 0;
-  const activeMatches = (result?.matches ?? []).filter((match) => !ignored.has(match.id));
+  const activeMatches = (result?.matches ?? []).filter((match) => !ignored.includes(match.id));
   const score = useMemo(() => {
     if (!result) return 0;
     const excluded = result.matches
-      .filter((match) => ignored.has(match.id))
+      .filter((match) => ignored.includes(match.id))
       .reduce((sum, match) => sum + match.token_count, 0);
     return Math.max(0, Math.round(result.score - (excluded / Math.max(1, result.word_count)) * 100));
   }, [result, ignored]);
 
-  const poll = async (scanId: string) => {
+  const poll = useCallback(async (scanId: string) => {
     const run = ++pollRun.current;
     setStalled(false);
     setNotice("Your report is processing. There is no need to submit it again.");
@@ -112,17 +115,26 @@ export default function PlagiarismChecker() {
       if (next.status === "failed") throw new Error(next.error || "The scan failed.");
     }
     throw new Error("The report is taking longer than expected. You can resume checking this scan.");
-  };
+  }, [setScan, setPhase]);
 
-  const watch = async (scanId: string) => {
-    try {
-      await poll(scanId);
-    } catch (error) {
+  // Follows the scan in progress, including one restored after a reload, so a
+  // running scan is never lost or paid for twice.
+  useEffect(() => {
+    if (phase === "progress" && !scan && !creatingScan.current) {
+      // Reloaded before the scan was created: nothing to follow.
+      setPhase("input");
+      return;
+    }
+    if (phase !== "progress" || !scan || stalled || watchedScan.current === scan.scan_id) return;
+    const scanId = scan.scan_id;
+    watchedScan.current = scanId;
+    poll(scanId).catch((error) => {
+      watchedScan.current = null;
       setStalled(true);
       setNotice("Status checks are paused. Resume this scan rather than submitting the document again.");
       toast.error(errorMessage(error, "The scan could not be completed."));
-    }
-  };
+    });
+  }, [phase, scan, stalled, poll, setPhase, toast]);
 
   const runScan = async (input: string) => {
     const count = countWords(input);
@@ -130,20 +142,23 @@ export default function PlagiarismChecker() {
     if (count > MAX_WORDS || input.length > MAX_CHARS) {
       return toast.error(`Keep the document under ${MAX_WORDS.toLocaleString()} words and ${MAX_CHARS.toLocaleString()} characters.`);
     }
+    setScan(null);
     setPhase("progress");
     setFocused(null);
     setEdits({});
-    setIgnored(new Set());
+    setIgnored([]);
     let created: Scan;
+    creatingScan.current = true;
     try {
       created = await postJson<Scan>("plagiarism-check", { text: input, title, options: settings });
     } catch (error) {
       setPhase("input");
       return toast.error(errorMessage(error, "The scan could not be started."));
+    } finally {
+      creatingScan.current = false;
     }
     setText(input);
     setScan(created);
-    await watch(created.scan_id);
   };
 
   const upload = async (file: File) => {
@@ -181,7 +196,7 @@ export default function PlagiarismChecker() {
     setTitle("Pasted text");
     setPhase("input");
     setEdits({});
-    setIgnored(new Set());
+    setIgnored([]);
     setFocused(null);
     setStalled(false);
   };
@@ -204,7 +219,7 @@ export default function PlagiarismChecker() {
     result.matches.forEach((match, index) => {
       if (match.start < cursor || match.start > text.length) return;
       nodes.push(<span key={`text-${index}`}>{text.slice(cursor, match.start)}</span>);
-      const cleared = ignored.has(match.id) || edits[match.id] !== undefined;
+      const cleared = ignored.includes(match.id) || edits[match.id] !== undefined;
       nodes.push(
         <InlineSegment
           key={match.id}
@@ -278,7 +293,7 @@ export default function PlagiarismChecker() {
         <p className="text-sm text-slate-500">{notice}</p>
         {stalled && scan && (
           <div className="flex justify-center gap-2">
-            <Button onClick={() => void watch(scan.scan_id)}>Resume this scan</Button>
+            <Button onClick={() => setStalled(false)}>Resume this scan</Button>
             <Button variant="secondary" onClick={reset}>
               Start over
             </Button>
@@ -390,7 +405,7 @@ export default function PlagiarismChecker() {
                 className="flex-1"
                 variant="secondary"
                 onClick={() => {
-                  setIgnored((current) => new Set(current).add(focused.id));
+                  setIgnored((current) => [...current, focused.id]);
                   setFocused(null);
                 }}
               >

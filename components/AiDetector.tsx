@@ -14,6 +14,7 @@ import {
   SEGMENT_STYLES,
   SegmentLabel,
 } from "@/lib/detection";
+import { usePersistentState } from "@/lib/persistentState";
 import { countWords } from "@/lib/text";
 import { DOCUMENT_ACCEPT, extractText, IMAGE_ACCEPT } from "@/lib/uploads";
 
@@ -30,10 +31,10 @@ const FILTERS: { key: Filter; label: string }[] = [
 export default function AiDetector() {
   const toast = useToast();
   const [config, setConfig] = useState<DetectorConfig>(FALLBACK_DETECTOR_CONFIG);
-  const [text, setText] = useState("");
+  const [text, setText] = usePersistentState("detector.text", "");
   const [busy, setBusy] = useState<"" | "scan" | "upload" | "report">("");
-  const [result, setResult] = useState<DetectionResponse | null>(null);
-  const [segments, setSegments] = useState<Segment[]>([]);
+  const [result, setResult] = usePersistentState<DetectionResponse | null>("detector.result", null);
+  const [segments, setSegments] = usePersistentState<Segment[]>("detector.segments", []);
   const [filter, setFilter] = useState<Filter>("all");
   const [focused, setFocused] = useState<number | null>(null);
   const [rewrite, setRewrite] = useState("");
