@@ -12,6 +12,13 @@ const TOOLS = [
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  if (pathname === "/login") return <main className="px-4">{children}</main>;
+
+  const signOut = async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    window.location.assign("/login");
+  };
+
   return (
     <div className="min-h-screen">
       <header className="border-b border-slate-200 bg-white">
@@ -34,6 +41,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               );
             })}
           </nav>
+          <button
+            type="button"
+            onClick={() => void signOut()}
+            className="ml-auto rounded-md px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-100"
+          >
+            Sign out
+          </button>
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-4 py-6">{children}</main>

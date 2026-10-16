@@ -1,7 +1,8 @@
 # Team Tools
 
 Internal app with three tools: Humanizer, AI Detector and Plagiarism Checker.
-There is no login. The app acts as one team account in the backend, which has
+Every page and API route requires signing in with the team account's email
+and password. Behind it, the app acts as one team account in the backend, which has
 no word tiers, credits, quotas or rate limits. Every run is logged by the
 backend and shows up in the admin panel under **Team Usage**.
 
@@ -41,14 +42,14 @@ request to the backend with the team account's access token:
 
 ## Deploying on Vercel
 
-Import the repo, set the four variables above in Project Settings → Environment
+Import the repo, set the variables above in Project Settings → Environment
 Variables, and deploy. No other configuration is needed.
 
 Uploads pass through a Vercel function, which caps request bodies at 4.5 MB, so
 the app accepts files up to 4 MB.
 
-The URL is the only thing protecting the app. Anyone who has it can use the
-tools without limit. Turn on Vercel Deployment Protection if that matters.
+Sessions last 7 days. To sign everyone out, set a new team account password
+(rerun the backend script) and update `TEAM_ACCOUNT_PASSWORD`.
 
 ## Revoking access
 

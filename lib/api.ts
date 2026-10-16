@@ -5,6 +5,7 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly retryAfterSeconds?: number,
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -20,7 +21,7 @@ async function toError(response: Response): Promise<ApiError> {
   const raw = payload?.message ?? payload?.error ?? `Request failed (${response.status})`;
   const message = Array.isArray(raw) ? raw.join(", ") : String(raw);
   const retry = Number(payload?.retry_after_seconds ?? payload?.data?.retry_after_seconds);
-  return new ApiError(message, response.status, Number.isFinite(retry) ? retry : undefined);
+  return new ApiError(message, response.status, Number.isFinite(retry) ? retry : undefined, payload?.code);
 }
 
 async function call(method: string, path: string, body?: BodyInit, json = false): Promise<Response> {
@@ -38,7 +39,11 @@ async function call(method: string, path: string, body?: BodyInit, json = false)
   } catch {
     throw new ApiError("Network error. Check your connection and try again.", 0);
   }
-  if (!response.ok) throw await toError(response);
+  if (!response.ok) {
+    const error = await toError(response);
+    if (error.code === "LOGIN_REQUIRED") window.location.assign(`/login?next=${encodeURIComponent(location.pathname)}`);
+    throw error;
+  }
   return response;
 }
 
