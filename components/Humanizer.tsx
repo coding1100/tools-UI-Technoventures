@@ -6,12 +6,14 @@ import { useToast } from "@/components/ui/Toast";
 import { Button, Card, FileButton, selectClass, Spinner, textareaClass, Toggle } from "@/components/ui/primitives";
 import { errorMessage, pollJson, postJson, remove, saveBlob, sleep } from "@/lib/api";
 import { aiShare, DetectionResponse, FALLBACK_DETECTOR_CONFIG, loadDetectorConfig } from "@/lib/detection";
+import { usePersistentState } from "@/lib/persistentState";
 import { countWords } from "@/lib/text";
 import { DOCUMENT_ACCEPT, extractText, IMAGE_ACCEPT } from "@/lib/uploads";
 
 /** The backend's top word tier, which the team account always gets. */
 const MAX_WORDS = 1500;
 const POLL_MS = 2000;
+const TERMINAL = ["completed", "failed", "cancelled"];
 
 const TONES = [
   { value: "natural", label: "Natural" },
@@ -52,21 +54,21 @@ type Side = "original" | "rewritten";
 
 export default function Humanizer() {
   const toast = useToast();
-  const [text, setText] = useState("");
-  const [tone, setTone] = useState<Tone>("natural");
-  const [customTone, setCustomTone] = useState("");
-  const [intensity, setIntensity] = useState<Intensity>("moderate");
-  const [register, setRegister] = useState<Register>("auto");
-  const [voiceSample, setVoiceSample] = useState("");
-  const [preserveCitations, setPreserveCitations] = useState(true);
+  const [text, setText] = usePersistentState("humanizer.text", "");
+  const [tone, setTone] = usePersistentState<Tone>("humanizer.tone", "natural");
+  const [customTone, setCustomTone] = usePersistentState("humanizer.customTone", "");
+  const [intensity, setIntensity] = usePersistentState<Intensity>("humanizer.intensity", "moderate");
+  const [register, setRegister] = usePersistentState<Register>("humanizer.register", "auto");
+  const [voiceSample, setVoiceSample] = usePersistentState("humanizer.voiceSample", "");
+  const [preserveCitations, setPreserveCitations] = usePersistentState("humanizer.preserveCitations", true);
   const [showOptions, setShowOptions] = useState(false);
 
-  const [job, setJob] = useState<HumanizerJob | null>(null);
-  const [result, setResult] = useState<HumanizerResult | null>(null);
-  const [submittedText, setSubmittedText] = useState("");
+  const [job, setJob] = usePersistentState<HumanizerJob | null>("humanizer.job", null);
+  const [result, setResult] = usePersistentState<HumanizerResult | null>("humanizer.result", null);
+  const [submittedText, setSubmittedText] = usePersistentState("humanizer.submittedText", "");
   const [uploading, setUploading] = useState(false);
   const [showChanges, setShowChanges] = useState(false);
-  const [scores, setScores] = useState<Partial<Record<Side, DetectionResponse>>>({});
+  const [scores, setScores] = usePersistentState<Partial<Record<Side, DetectionResponse>>>("humanizer.scores", {});
   const [scoring, setScoring] = useState(false);
   const [minDetectWords, setMinDetectWords] = useState(FALLBACK_DETECTOR_CONFIG.minimum_words);
   const activeJob = useRef<string | null>(null);
@@ -80,7 +82,39 @@ export default function Humanizer() {
   }, []);
 
   const words = useMemo(() => countWords(text), [text]);
-  const running = !!job && !["completed", "failed", "cancelled"].includes(job.status);
+  const running = !!job && !TERMINAL.includes(job.status);
+
+  // Follows any unfinished job, including one restored after a reload. A full
+  // run takes 30 to 70 seconds, so the job is polled rather than awaited.
+  useEffect(() => {
+    if (!job || TERMINAL.includes(job.status) || activeJob.current === job.job_id) return;
+    const jobId = job.job_id;
+    activeJob.current = jobId;
+    void (async () => {
+      try {
+        let current = job;
+        while (!TERMINAL.includes(current.status)) {
+          await sleep(POLL_MS);
+          if (activeJob.current !== jobId) return; // Cancelled, or the page was left.
+          current = await pollJson<HumanizerJob>(`humanizer/jobs/${jobId}`);
+          if (activeJob.current !== jobId) return;
+          setJob(current);
+        }
+        if (current.status === "completed" && current.result) {
+          setResult(current.result);
+          toast.success("Rewrite ready.");
+        } else if (current.status === "failed") {
+          toast.error(current.error || "The rewrite failed.");
+        }
+      } catch (error) {
+        if (activeJob.current !== jobId) return;
+        setJob(null);
+        toast.error(errorMessage(error, "The rewrite failed."));
+      } finally {
+        if (activeJob.current === jobId) activeJob.current = null;
+      }
+    })();
+  }, [job, setJob, setResult, toast]);
 
   const humanize = async () => {
     if (!text.trim()) return toast.error("Enter some text first.");
@@ -91,7 +125,6 @@ export default function Humanizer() {
     setScores({});
     setShowChanges(false);
     setSubmittedText(text);
-    let jobId: string | null = null;
     try {
       const created = await postJson<HumanizerJob>("humanizer/jobs", {
         text,
@@ -103,34 +136,14 @@ export default function Humanizer() {
         preserve_citations: preserveCitations,
         return_diff: true,
       });
-      jobId = created.job_id;
-      activeJob.current = jobId;
       setJob(created);
-
-      // A full run takes 30 to 70 seconds, so the job is polled rather than awaited.
-      let current = created;
-      while (!["completed", "failed", "cancelled"].includes(current.status)) {
-        await sleep(POLL_MS);
-        if (activeJob.current !== jobId) return; // Cancelled, or the page was left.
-        current = await pollJson<HumanizerJob>(`humanizer/jobs/${jobId}`);
-        setJob(current);
-      }
-      if (current.status === "completed" && current.result) {
-        setResult(current.result);
-        toast.success("Rewrite ready.");
-      } else if (current.status === "failed") {
-        toast.error(current.error || "The rewrite failed.");
-      }
     } catch (error) {
-      setJob(null);
       toast.error(errorMessage(error, "The rewrite failed."));
-    } finally {
-      if (activeJob.current === jobId) activeJob.current = null;
     }
   };
 
   const cancel = async () => {
-    const id = activeJob.current;
+    const id = job?.job_id;
     activeJob.current = null;
     setJob(null);
     if (id) await remove(`humanizer/jobs/${id}`).catch(() => undefined);
